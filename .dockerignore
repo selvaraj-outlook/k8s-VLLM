@@ -1,0 +1,15 @@
+**/.git
+**/.github
+**/.vscode
+**/.idea
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/node_modules
+**/.DS_Store
+**/.env
+**/.env.*
+**/tmp
+**/dist
+**/build

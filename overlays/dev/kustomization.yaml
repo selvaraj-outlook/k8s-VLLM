@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gpu-inference-dev
+resources:
+  - ../../base
+  - namespace.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: gpu-platform
+      app.kubernetes.io/environment: dev
+      app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: vllm/vllm-openai
+    newName: gpu-inference
+    newTag: latest
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: gpu-inference-config
+    patch: |-
+      - op: replace
+        path: /data/GPU_MEMORY_UTILIZATION
+        value: "0.90"
+      - op: replace
+        path: /data/MAX_MODEL_LEN
+        value: "4096"

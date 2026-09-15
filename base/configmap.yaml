@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-inference-config
+data:
+  MODEL_NAME: Qwen/Qwen2.5-1.5B-Instruct
+  GPU_MEMORY_UTILIZATION: "0.90"
+  MAX_MODEL_LEN: "4096"
+  TENSOR_PARALLEL_SIZE: "1"

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-inference-prod
+  labels:
+    kubernetes.io/metadata.name: gpu-inference-prod
+    app.kubernetes.io/part-of: gpu-platform
+    app.kubernetes.io/environment: prod
