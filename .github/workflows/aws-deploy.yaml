@@ -23,6 +23,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate AWS role ARN
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN_DEV }}
+        run: |
+          case "$AWS_ROLE_ARN" in
+            arn:aws:iam::*:role/*) ;;
+            *) echo "AWS_ROLE_ARN_DEV must be a full IAM role ARN, for example arn:aws:iam::861097501858:role/GitHubActions-DevRole"; exit 1 ;;
+          esac
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
