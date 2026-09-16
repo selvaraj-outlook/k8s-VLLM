@@ -28,6 +28,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-build
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -59,6 +61,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-dev
 
       - name: Update kubeconfig for EKS
         run: |
@@ -85,6 +89,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-staging
 
       - name: Update kubeconfig for EKS
         run: |
@@ -111,6 +117,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
           aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-prod
 
       - name: Update kubeconfig for EKS
         run: |
