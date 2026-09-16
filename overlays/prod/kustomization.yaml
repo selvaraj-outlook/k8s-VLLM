@@ -14,5 +14,5 @@ labels:
 
 images:
   - name: vllm/vllm-openai
-    newName: 861097501858.dkr.ecr.us-east-1.amazonaws.com/gpu-inference
+    newName: 861097501858.dkr.ecr.us-east-1.amazonaws.com/dev/k8s-vllm
     newTag: latest

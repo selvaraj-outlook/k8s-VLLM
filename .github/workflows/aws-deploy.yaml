@@ -16,7 +16,7 @@ permissions:
 env:
   AWS_REGION: us-east-1
   AWS_ACCOUNT_ID: "861097501858"
-  ECR_REPOSITORY: gpu-inference
+  ECR_REPOSITORY: dev/k8s-vllm
   IMAGE_TAG: ${{ github.sha }}
   ECR_REGISTRY: 861097501858.dkr.ecr.us-east-1.amazonaws.com
 
