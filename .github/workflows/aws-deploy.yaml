@@ -6,10 +6,19 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: gpu-inference-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 env:
   AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "861097501858"
   ECR_REPOSITORY: gpu-inference
   IMAGE_TAG: ${{ github.sha }}
+  ECR_REGISTRY: 861097501858.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   build-and-push:
@@ -21,37 +30,38 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate AWS role ARN
         env:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
         run: |
           case "$AWS_ROLE_ARN" in
             arn:aws:iam::*:role/*) ;;
-            *) echo "AWS_ROLE_ARN_DEV must be a full IAM role ARN, for example arn:aws:iam::861097501858:role/GitHubActions-DevRole"; exit 1 ;;
+            *) echo "AWS_ROLE_ARN must be a full IAM role ARN, for example arn:aws:iam::861097501858:role/GitHubActions-DeploymentRole"; exit 1 ;;
           esac
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
-          role-session-name: github-actions-build
+          role-session-name: github-actions-build-${{ github.run_id }}
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Verify ECR repository
+        run: aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION"
+
       - name: Build and push image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          set -euo pipefail
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build --pull -t "$image" .
+          docker push "$image"
 
   deploy-dev:
     needs: build-and-push
@@ -63,12 +73,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
           role-session-name: github-actions-dev
@@ -79,7 +89,11 @@ jobs:
 
       - name: Deploy to dev
         run: |
+          set -euo pipefail
           kubectl apply -k overlays/dev
+          kubectl -n gpu-inference-dev set image deployment/gpu-inference \
+            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          kubectl -n gpu-inference-dev rollout status deployment/gpu-inference --timeout=15m
 
   deploy-staging:
     needs: deploy-dev
@@ -91,12 +105,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
           role-session-name: github-actions-staging
@@ -107,7 +121,11 @@ jobs:
 
       - name: Deploy to staging
         run: |
+          set -euo pipefail
           kubectl apply -k overlays/staging
+          kubectl -n gpu-inference-staging set image deployment/gpu-inference \
+            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          kubectl -n gpu-inference-staging rollout status deployment/gpu-inference --timeout=15m
 
   deploy-prod:
     needs: deploy-staging
@@ -119,12 +137,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
           role-session-name: github-actions-prod
@@ -135,4 +153,8 @@ jobs:
 
       - name: Deploy to production
         run: |
+          set -euo pipefail
           kubectl apply -k overlays/prod
+          kubectl -n gpu-inference-prod set image deployment/gpu-inference \
+            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          kubectl -n gpu-inference-prod rollout status deployment/gpu-inference --timeout=15m
