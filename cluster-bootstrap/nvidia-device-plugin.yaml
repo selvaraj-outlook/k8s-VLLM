@@ -1,0 +1,57 @@
+# Advertises nvidia.com/gpu to the kubelet so pods can request GPUs.
+#
+# The EKS AL2023_x86_64_NVIDIA AMI already ships the NVIDIA driver and the
+# container toolkit, so the driver-installing GPU Operator is not needed. This
+# standalone plugin only registers the devices, which is the lighter and less
+# intrusive half of what the operator does.
+#
+# The tolerations and nodeSelector must stay in sync with the GPU node group in
+# terraform/node-groups.tf: it is labelled nvidia.com/gpu.present=true and
+# tainted nvidia.com/gpu=present:NoSchedule. Without the toleration this
+# DaemonSet cannot land on the very nodes it exists to manage.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: nvidia-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nvidia-device-plugin
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvidia-device-plugin
+    spec:
+      priorityClassName: system-node-critical
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: CriticalAddonsOnly
+          operator: Exists
+      containers:
+        - name: nvidia-device-plugin-ctr
+          image: nvcr.io/nvidia/k8s-device-plugin:v0.19.3
+          env:
+            # Keep the pod alive on a node where GPU init fails so the failure is
+            # visible in logs rather than as an endless CrashLoopBackOff.
+            - name: FAIL_ON_INIT_ERROR
+              value: "false"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins

@@ -12,16 +12,19 @@ terraform {
     }
   }
 
-  # Remote state is strongly recommended for shared infrastructure.
-  # Create the bucket and lock table first, then uncomment and run `terraform init -migrate-state`.
+  # Partial backend configuration. Bucket and region are supplied at init time so
+  # the same code works across accounts:
   #
-  # backend "s3" {
-  #   bucket       = "my-tf-state-bucket"
-  #   key          = "k8s-vllm/infra.tfstate"
-  #   region       = "us-east-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  #   terraform init -backend-config=backend.hcl        (local, see backend.hcl.example)
+  #   terraform init -backend-config="bucket=..." ...   (CI, see the terraform-plan job)
+  #
+  # Remote state is mandatory once CI applies this. With local state, every
+  # pipeline run starts from an empty state file and tries to build a second copy
+  # of the whole stack.
+  #
+  # use_lockfile enables S3-native state locking, so no DynamoDB table is needed.
+  # Create the bucket first with scripts/bootstrap-state.sh.
+  backend "s3" {}
 }
 
 provider "aws" {

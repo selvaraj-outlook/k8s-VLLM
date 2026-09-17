@@ -64,13 +64,29 @@ output "configure_kubectl" {
 }
 
 output "post_apply_steps" {
-  description = "Cluster-level components that live outside Terraform, in order."
+  description = "What to do after apply. The cluster prerequisites are applied by the pipeline's bootstrap-cluster job, so this is mostly verification."
   value = [
-    "1. aws eks update-kubeconfig --name ${aws_eks_cluster.this.name} --region ${var.aws_region}",
-    "2. kubectl apply -f manifests/storageclass-gp3.yaml",
-    "3. helm upgrade --install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace --set driver.enabled=false",
-    "4. Set GitHub secrets AWS_ROLE_ARN=${aws_iam_role.github_actions.arn} and EKS_CLUSTER_NAME=${aws_eks_cluster.this.name}",
+    "1. Set GitHub secrets: AWS_ROLE_ARN=${aws_iam_role.github_actions.arn} and EKS_CLUSTER_NAME=${aws_eks_cluster.this.name}",
+    "2. aws eks update-kubeconfig --name ${aws_eks_cluster.this.name} --region ${var.aws_region}",
+    "3. Confirm the GPU node registered its device: kubectl get nodes -o custom-columns='NODE:.metadata.name,GPU:.status.allocatable.nvidia\\.com/gpu'",
+    "4. If that column is empty or <none>, check the G-instance vCPU quota and the gpu node group: aws eks describe-nodegroup --cluster-name ${aws_eks_cluster.this.name} --nodegroup-name gpu",
+    "5. Push to main, or run the workflow manually. The bootstrap-cluster job applies cluster-bootstrap/ (gp3 StorageClass + NVIDIA device plugin) before the workload.",
   ]
+}
+
+output "gpu_capacity_summary" {
+  description = "GPU vCPU footprint, to compare against the 'Running On-Demand G and VT instances' quota (L-DB2E81BA), which is 0 by default on new accounts."
+  value = {
+    instance_type            = var.gpu_instance_types[0]
+    desired_nodes            = var.gpu_desired_size
+    max_nodes                = var.gpu_max_size
+    availability_zone        = local.azs[0]
+    capacity_type            = var.gpu_capacity_type
+    required_quota_code      = var.gpu_capacity_type == "SPOT" ? "L-3819A6DF" : "L-DB2E81BA"
+    vcpus_needed_at_max      = "${var.gpu_max_size} nodes x vCPU per ${var.gpu_instance_types[0]}"
+    concurrent_environments  = "Each namespace runs 1 replica requesting 1 whole GPU, so N environments need N GPU nodes."
+    check_current_quota_with = "aws service-quotas get-service-quota --service-code ec2 --quota-code ${var.gpu_capacity_type == "SPOT" ? "L-3819A6DF" : "L-DB2E81BA"} --region ${var.aws_region}"
+  }
 }
 
 output "model_cache_kms_key_arn" {

@@ -6,3 +6,6 @@ metadata:
     kubernetes.io/metadata.name: gpu-inference-staging
     app.kubernetes.io/part-of: gpu-platform
     app.kubernetes.io/environment: staging
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

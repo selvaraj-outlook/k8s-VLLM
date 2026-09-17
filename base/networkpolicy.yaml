@@ -10,12 +10,23 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # An empty podSelector matches every pod in the policy's own namespace, which
+    # is what "same-namespace ingress" actually means here.
+    #
+    # This previously used a namespaceSelector on
+    # kubernetes.io/metadata.name: gpu-inference. Kustomize's namespace
+    # transformer rewrites metadata.namespace but not label values inside a
+    # selector, so in the gpu-inference-dev/-staging/-prod namespaces the
+    # selector matched nothing and all in-cluster ingress was denied. The failure
+    # is invisible to kubectl port-forward, which reaches the pod through the
+    # kubelet and bypasses NetworkPolicy entirely.
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: gpu-inference
+        - podSelector: {}
       ports:
         - protocol: TCP
           port: 8000
   egress:
+    # Intentionally open: the container downloads model weights from Hugging Face
+    # on first start and needs DNS. Tighten this once weights are baked into the
+    # image or mirrored inside the VPC.
     - {}

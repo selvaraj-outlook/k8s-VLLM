@@ -3,7 +3,17 @@ kind: PodDisruptionBudget
 metadata:
   name: gpu-inference
 spec:
-  minAvailable: 1
+  # maxUnavailable: 1 rather than minAvailable: 1.
+  #
+  # With replicas: 1, minAvailable: 1 permits zero voluntary disruptions, so
+  # `kubectl drain` blocks forever and managed node group upgrades stall at the
+  # drain step. Since the Deployment already uses strategy: Recreate, it accepts
+  # a gap in availability during a rollout, so refusing to allow one during a
+  # node drain protects nothing.
+  #
+  # If you scale to multiple replicas across multiple GPU nodes, switch this back
+  # to minAvailable to keep capacity during disruptions.
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: gpu-inference

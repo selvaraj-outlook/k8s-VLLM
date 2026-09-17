@@ -1,0 +1,22 @@
+# Cluster-scoped prerequisites for the vLLM workload.
+#
+# These are applied once per cluster, before any environment overlay. They are
+# deliberately not part of base/, because base/ is namespaced workload config
+# that gets stamped out three times, whereas these objects are singletons.
+#
+# Kept in Kubernetes rather than Terraform on purpose: managing them with the
+# terraform kubernetes/helm providers would require cluster credentials while the
+# cluster is still being created, which makes the first apply on a fresh account
+# unreliable.
+#
+#   kubectl apply -k cluster-bootstrap
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - storageclass-gp3.yaml
+  - nvidia-device-plugin.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: gpu-platform
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false

@@ -6,3 +6,14 @@ metadata:
     kubernetes.io/metadata.name: gpu-inference-dev
     app.kubernetes.io/part-of: gpu-platform
     app.kubernetes.io/environment: dev
+    # Pod Security Admission. These previously lived only on base/namespace.yaml,
+    # which was never listed in base/kustomization.yaml and so was never applied:
+    # the namespaces the pipeline actually creates had no enforcement at all.
+    #
+    # baseline is enforced rather than restricted because the upstream vLLM image
+    # runs as root and does not set the seccomp profile or drop capabilities that
+    # restricted requires. audit/warn at restricted surfaces the remaining gap
+    # without blocking the deploy.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

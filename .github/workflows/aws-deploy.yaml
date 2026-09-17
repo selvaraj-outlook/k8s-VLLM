@@ -1,9 +1,24 @@
 name: GPU Inference Deployment
 
+# Full sequence, infrastructure first:
+#
+#   terraform-plan -> terraform-apply -> build-and-push -> bootstrap-cluster
+#     -> deploy-dev -> deploy-staging -> deploy-prod
+#
+# The infra jobs come first because everything downstream depends on what they
+# create: build-and-push needs the ECR repository, and the deploy jobs need the
+# EKS cluster and the access entry that lets kubectl authenticate.
+
 on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+      - ".github/workflows/aws-deploy.yaml"
   workflow_dispatch:
 
 concurrency:
@@ -15,18 +30,215 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: "861097501858"
   ECR_REPOSITORY: dev/k8s-vllm
   IMAGE_TAG: ${{ github.sha }}
-  ECR_REGISTRY: 861097501858.dkr.ecr.us-east-1.amazonaws.com
+  KUSTOMIZE_VERSION: v5.7.1
+  TERRAFORM_VERSION: 1.15.4
+  TF_STATE_KEY: k8s-vllm/infra.tfstate
+  # The account ID is resolved at runtime from the assumed role rather than
+  # hardcoded, so this workflow follows whichever account the role points at.
 
 jobs:
-  build-and-push:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+
+  terraform-plan:
     runs-on: ubuntu-latest
-    environment: dev
+    # Unprotected environment. It exists so the OIDC subject is
+    # `repo:<owner>/<repo>:environment:infra-plan`, which the Terraform CI role
+    # trusts. Without an environment the subject would be the branch or
+    # pull_request ref, which that role deliberately does not trust.
+    # Do not attach reviewers here; that belongs on `infra` for apply.
+    environment: infra-plan
+    timeout-minutes: 20
     permissions:
       id-token: write
       contents: read
+      pull-requests: write
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Require a state bucket
+        run: |
+          if [ -z "${{ vars.TF_STATE_BUCKET }}" ]; then
+            echo "::error::The TF_STATE_BUCKET repository variable is not set. Terraform would fall back to local state and try to rebuild the entire stack on every run. Create the bucket with terraform/scripts/bootstrap-state.sh, then: gh variable set TF_STATE_BUCKET --body <bucket>"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          # Falls back to the deploy role so this works before the dedicated
+          # infra role exists. Once it does, set AWS_TERRAFORM_ROLE_ARN.
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-tf-plan-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          # The wrapper rewrites exit codes, which breaks -detailed-exitcode.
+          terraform_wrapper: false
+
+      - name: Disable resource adoption unless explicitly enabled
+        working-directory: terraform
+        run: |
+          # imports.tf adopts an OIDC provider, IAM role and ECR repository that
+          # exist only in the original account. Anywhere else, every plan fails
+          # with "Cannot import non-existent remote object". Set the
+          # TF_ADOPT_EXISTING repository variable to 'true' to keep it.
+          if [ "${{ vars.TF_ADOPT_EXISTING }}" = "true" ]; then
+            echo "Adoption enabled: keeping imports.tf"
+          elif [ -f imports.tf ]; then
+            mv imports.tf imports.tf.disabled
+            echo "::notice::Moved imports.tf aside. Set TF_ADOPT_EXISTING=true to adopt pre-existing resources instead of creating them."
+          fi
+
+      - name: Terraform fmt
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform validate
+        working-directory: terraform
+        run: terraform validate -no-color
+
+      - name: Terraform plan
+        id: plan
+        working-directory: terraform
+        run: |
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "has_changes=false" >> "$GITHUB_OUTPUT"; echo "No infrastructure changes." ;;
+            2) echo "has_changes=true"  >> "$GITHUB_OUTPUT"; echo "Infrastructure changes pending." ;;
+            *) echo "::error::terraform plan failed"; exit "$code" ;;
+          esac
+
+      - name: Upload plan
+        if: steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # The binary plan can embed resolved values, so keep retention short.
+          name: tfplan-${{ github.run_id }}
+          path: terraform/tfplan
+          retention-days: 1
+          if-no-files-found: error
+
+  terraform-apply:
+    needs: terraform-plan
+    # Never applies from a pull request, and only when there is something to do.
+    # TERRAFORM_AUTO_APPLY gates it so infrastructure is not rebuilt by an
+    # unrelated push. Attach required reviewers to the `infra` environment for a
+    # human gate.
+    if: |
+      github.event_name != 'pull_request' &&
+      needs.terraform-plan.outputs.has_changes == 'true' &&
+      vars.TERRAFORM_AUTO_APPLY == 'true'
+    runs-on: ubuntu-latest
+    environment: infra
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_TERRAFORM_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-tf-apply-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Disable resource adoption unless explicitly enabled
+        working-directory: terraform
+        run: |
+          if [ "${{ vars.TF_ADOPT_EXISTING }}" != "true" ] && [ -f imports.tf ]; then
+            mv imports.tf imports.tf.disabled
+          fi
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: terraform
+
+      - name: Terraform apply
+        working-directory: terraform
+        # Applying the saved plan, not re-planning, so what was reviewed is
+        # exactly what runs.
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Summarise outputs
+        working-directory: terraform
+        run: |
+          {
+            echo "### Infrastructure applied"
+            echo '```'
+            terraform output -no-color post_apply_steps || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Application
+  #
+  # These run whether or not terraform-apply was needed. `skipped` is the normal
+  # result when infrastructure is already current.
+  # ---------------------------------------------------------------------------
+
+  build-and-push:
+    needs: [terraform-plan, terraform-apply]
+    if: |
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      needs.terraform-plan.result == 'success' &&
+      (needs.terraform-apply.result == 'success' || needs.terraform-apply.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
 
     steps:
       - name: Checkout code
@@ -38,7 +250,7 @@ jobs:
         run: |
           case "$AWS_ROLE_ARN" in
             arn:aws:iam::*:role/*) ;;
-            *) echo "AWS_ROLE_ARN must be a full IAM role ARN, for example arn:aws:iam::861097501858:role/GitHubActions-DeploymentRole"; exit 1 ;;
+            *) echo "AWS_ROLE_ARN must be a full IAM role ARN, for example arn:aws:iam::123456789012:role/GitHubActions-DeploymentRole"; exit 1 ;;
           esac
 
       - name: Configure AWS credentials via OIDC
@@ -56,17 +268,74 @@ jobs:
       - name: Verify ECR repository
         run: aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION"
 
+      - name: Resolve image reference
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -euo pipefail
-          image="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker build --pull -t "$image" .
-          docker push "$image"
+          docker build --pull -t "$IMAGE" .
+          docker push "$IMAGE"
 
-  deploy-dev:
+  # Cluster-scoped prerequisites, applied once before any environment overlay:
+  # the default gp3 StorageClass the model-cache PVC binds to, and the NVIDIA
+  # device plugin that advertises nvidia.com/gpu. Without these the workload
+  # deploys and then hangs with a Pending pod.
+  bootstrap-cluster:
     needs: build-and-push
     runs-on: ubuntu-latest
     environment: dev
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+          role-session-name: github-actions-bootstrap
+
+      - name: Update kubeconfig for EKS
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+
+      - name: Apply cluster prerequisites
+        run: |
+          set -euo pipefail
+          # EKS ships its own default StorageClass. Two defaults is ambiguous, so
+          # demote it before gp3 claims the role. Tolerated if absent.
+          kubectl annotate storageclass gp2 \
+            storageclass.kubernetes.io/is-default-class=false --overwrite 2>/dev/null || true
+          kubectl apply -k cluster-bootstrap
+          kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset --timeout=5m
+
+      - name: Report GPU capacity
+        run: |
+          set -euo pipefail
+          echo "Nodes advertising nvidia.com/gpu:"
+          kubectl get nodes -o custom-columns='NODE:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu' --no-headers
+          gpus=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' | grep -c '^[1-9]' || true)
+          echo "GPU-capable nodes: $gpus"
+          if [ "$gpus" -eq 0 ]; then
+            echo "::warning::No node is advertising nvidia.com/gpu. The vLLM pod will stay Pending. Check the GPU node group and the G-instance vCPU service quota."
+          fi
+
+  deploy-dev:
+    needs: [build-and-push, bootstrap-cluster]
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
@@ -83,22 +352,49 @@ jobs:
           audience: sts.amazonaws.com
           role-session-name: github-actions-dev
 
-      - name: Update kubeconfig for EKS
-        run: |
-          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-
-      - name: Deploy to dev
+      - name: Install kustomize
         run: |
           set -euo pipefail
-          kubectl apply -k overlays/dev
-          kubectl -n gpu-inference-dev set image deployment/gpu-inference \
-            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          kustomize version
+
+      - name: Update kubeconfig for EKS
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+
+      - name: Deploy to dev
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+        run: |
+          set -euo pipefail
+          # Pin the image inside the overlay so `apply` is a single atomic change.
+          # Applying first and patching the image afterwards briefly pointed the
+          # Deployment at a tag that was never pushed, and with strategy: Recreate
+          # that tore down the running pod into an ImagePullBackOff.
+          cd overlays/dev
+          kustomize edit set image "vllm/vllm-openai=$IMAGE"
+          kubectl apply -k .
           kubectl -n gpu-inference-dev rollout status deployment/gpu-inference --timeout=15m
 
+      - name: Diagnose failed rollout
+        if: failure()
+        run: |
+          kubectl -n gpu-inference-dev get pods,pvc,events --sort-by=.metadata.creationTimestamp || true
+          kubectl -n gpu-inference-dev describe deployment/gpu-inference || true
+
+  # Staging and prod are opt-in. Every environment runs its own single-GPU
+  # replica, so all three together need three GPU nodes. Enabling them without
+  # that capacity leaves the pod Pending and burns the full rollout timeout
+  # before failing. Set the repository variables DEPLOY_STAGING / DEPLOY_PROD to
+  # 'true' once the G-instance vCPU quota and node group can cover them.
   deploy-staging:
-    needs: deploy-dev
+    needs: [build-and-push, deploy-dev]
+    if: vars.DEPLOY_STAGING == 'true'
     runs-on: ubuntu-latest
     environment: staging
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
@@ -115,22 +411,38 @@ jobs:
           audience: sts.amazonaws.com
           role-session-name: github-actions-staging
 
-      - name: Update kubeconfig for EKS
-        run: |
-          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-
-      - name: Deploy to staging
+      - name: Install kustomize
         run: |
           set -euo pipefail
-          kubectl apply -k overlays/staging
-          kubectl -n gpu-inference-staging set image deployment/gpu-inference \
-            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+
+      - name: Update kubeconfig for EKS
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+
+      - name: Deploy to staging
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+        run: |
+          set -euo pipefail
+          cd overlays/staging
+          kustomize edit set image "vllm/vllm-openai=$IMAGE"
+          kubectl apply -k .
           kubectl -n gpu-inference-staging rollout status deployment/gpu-inference --timeout=15m
 
+      - name: Diagnose failed rollout
+        if: failure()
+        run: |
+          kubectl -n gpu-inference-staging get pods,pvc,events --sort-by=.metadata.creationTimestamp || true
+
   deploy-prod:
-    needs: deploy-staging
+    needs: [build-and-push, deploy-staging]
+    if: vars.DEPLOY_PROD == 'true'
     runs-on: ubuntu-latest
     environment: prod
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
@@ -147,14 +459,28 @@ jobs:
           audience: sts.amazonaws.com
           role-session-name: github-actions-prod
 
-      - name: Update kubeconfig for EKS
-        run: |
-          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-
-      - name: Deploy to production
+      - name: Install kustomize
         run: |
           set -euo pipefail
-          kubectl apply -k overlays/prod
-          kubectl -n gpu-inference-prod set image deployment/gpu-inference \
-            vllm="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+
+      - name: Update kubeconfig for EKS
+        run: aws eks update-kubeconfig --name "${{ secrets.EKS_CLUSTER_NAME }}" --region "$AWS_REGION"
+
+      - name: Deploy to production
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+        run: |
+          set -euo pipefail
+          cd overlays/prod
+          kustomize edit set image "vllm/vllm-openai=$IMAGE"
+          kubectl apply -k .
           kubectl -n gpu-inference-prod rollout status deployment/gpu-inference --timeout=15m
+
+      - name: Diagnose failed rollout
+        if: failure()
+        run: |
+          kubectl -n gpu-inference-prod get pods,pvc,events --sort-by=.metadata.creationTimestamp || true

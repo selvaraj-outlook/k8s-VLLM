@@ -1,0 +1,28 @@
+# Default StorageClass backing the model-cache PVC in base/pvc.yaml.
+#
+# base/pvc.yaml deliberately sets no storageClassName so it stays portable, which
+# means the cluster must supply a default. Provisioning depends on the
+# aws-ebs-csi-driver add-on installed by terraform/addons.tf.
+#
+# volumeBindingMode: WaitForFirstConsumer is load bearing. An EBS volume is
+# zonal, so it must not be created until the scheduler has picked the GPU node,
+# otherwise the volume can land in an AZ where no GPU node exists and the pod
+# will never be able to attach it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+# Retain keeps a downloaded model cache alive across a PVC delete. Model
+# downloads are slow and metered, so losing the cache is expensive.
+reclaimPolicy: Retain
+parameters:
+  type: gp3
+  throughput: "250"
+  iops: "4000"
+  encrypted: "true"
+  csi.storage.k8s.io/fstype: ext4

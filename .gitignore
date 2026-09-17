@@ -22,6 +22,10 @@ crash.*.log
 *.tfvars.json
 !*.tfvars.example
 
+# Backend config holds an environment-specific bucket name.
+# backend.hcl.example is the tracked template.
+backend.hcl
+
 # Local CLI overrides
 .terraformrc
 terraform.rc
