@@ -1,0 +1,32 @@
+# Copy to terraform.tfvars and adjust. Values below mirror the defaults that the
+# GitHub workflow and kustomize overlays already assume.
+
+aws_region         = "us-east-1"
+cluster_name       = "gpu-inference"
+kubernetes_version = "1.34"
+
+github_owner      = "selvaraj-outlook"
+github_repository = "k8s-VLLM"
+
+ecr_repository_name   = "dev/k8s-vllm"
+create_ecr_repository = true
+
+# GPU capacity. One A10G (24 GB) per node; each vLLM replica takes a whole GPU.
+gpu_instance_types = ["g5.2xlarge"]
+gpu_desired_size   = 1
+gpu_min_size       = 1
+gpu_max_size       = 3
+gpu_capacity_type  = "ON_DEMAND"
+
+# Cost controls for non-production accounts.
+single_nat_gateway = true
+az_count           = 3
+
+# Tighten this once you know the egress ranges of your runners.
+cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
+
+tags = {
+  Project   = "k8s-vllm"
+  ManagedBy = "terraform"
+  Owner     = "platform"
+}

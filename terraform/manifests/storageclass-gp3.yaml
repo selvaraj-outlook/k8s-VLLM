@@ -1,0 +1,31 @@
+# gp3 StorageClass for the model-cache PVC in base/pvc.yaml.
+#
+# Apply after `terraform apply`, substituting the KMS key ARN from the
+# `model_cache_kms_key_arn` output:
+#
+#   kubectl apply -f manifests/storageclass-gp3.yaml
+#
+# WaitForFirstConsumer matters here: the volume is zonal, so it must be created
+# in the same AZ as the GPU node that ends up running the pod.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    # Make this the default so base/pvc.yaml (which sets no storageClassName)
+    # binds to it. Remove the default from the built-in gp2 class first:
+    #   kubectl patch storageclass gp2 -p \
+    #     '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+parameters:
+  type: gp3
+  throughput: "250"
+  iops: "4000"
+  encrypted: "true"
+  # Optional: pin to the customer-managed key created by Terraform.
+  # kmsKeyId: <model_cache_kms_key_arn>
+  csi.storage.k8s.io/fstype: ext4
