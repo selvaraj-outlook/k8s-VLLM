@@ -17,10 +17,13 @@
 crash.log
 crash.*.log
 
-# Real variable values. terraform.tfvars.example is the tracked template.
+# Machine-specific variable values.
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
+# *.auto.tfvars is the shared, committed configuration that CI and local runs
+# both load. Keep secrets out of those files.
+!*.auto.tfvars
 
 # Backend config holds an environment-specific bucket name.
 # backend.hcl.example is the tracked template.
