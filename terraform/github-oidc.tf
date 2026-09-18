@@ -42,11 +42,28 @@ locals {
     var.allow_deploy_role_terraform_bootstrap ? var.terraform_ci_environments : [],
   )
 
-  github_subjects = concat(
-    [for env in local.deploy_role_environments : "repo:${local.github_repo}:environment:${env}"],
-    [for branch in var.github_allowed_branches : "repo:${local.github_repo}:ref:refs/heads/${branch}"],
+  # Both subject prefixes are emitted. Which one GitHub actually sends depends on
+  # the repository's `use_immutable_subject` setting, and generating both means
+  # toggling that setting cannot silently lock CI out of AWS. Entries for the
+  # inactive form are inert.
+  github_subject_prefixes = compact([
+    "repo:${local.github_repo}",
+    var.github_immutable_subject_prefix,
+  ])
+
+  github_subjects = distinct(concat(
+    flatten([
+      for prefix in local.github_subject_prefixes : [
+        for env in local.deploy_role_environments : "${prefix}:environment:${env}"
+      ]
+    ]),
+    flatten([
+      for prefix in local.github_subject_prefixes : [
+        for branch in var.github_allowed_branches : "${prefix}:ref:refs/heads/${branch}"
+      ]
+    ]),
     var.github_allowed_subjects,
-  )
+  ))
 }
 
 data "aws_iam_policy_document" "github_actions_assume_role" {

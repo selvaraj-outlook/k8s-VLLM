@@ -214,25 +214,42 @@ variable "github_repository" {
   default     = "k8s-VLLM"
 }
 
+variable "github_immutable_subject_prefix" {
+  description = <<-EOT
+    Immutable OIDC subject prefix for this repository, in the form
+    `repo:<owner>@<owner_id>/<repo>@<repo_id>`.
+
+    This repository has `use_immutable_subject: true`, which means GitHub issues
+    subject claims using numeric owner and repository IDs rather than names:
+
+      repo:selvaraj-outlook@261786377/k8s-VLLM@1371954039:environment:dev
+
+    Trust policy entries built from the plain `repo:owner/name` form will never
+    match while that setting is on, which is a silent failure: the role simply
+    refuses AssumeRoleWithWebIdentity with "Not authorized".
+
+    Confirm the current value with:
+      gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+
+    Set to "" if immutable subjects are disabled, and only the name-based form
+    will be generated.
+  EOT
+  type        = string
+  default     = "repo:selvaraj-outlook@261786377/k8s-VLLM@1371954039"
+}
+
 variable "github_allowed_subjects" {
   description = <<-EOT
-    Extra `sub` claim patterns allowed to assume the deploy role, appended to the
-    environment-scoped subjects below.
+    Extra `sub` claim patterns allowed to assume the deploy role, on top of the
+    environment-scoped subjects generated for each prefix.
 
-    The defaults reproduce the trust policy already attached to the existing
-    GitHubActions-DeploymentRole so that importing it causes no change. Two things
-    here deserve review:
-      - `repo:core-projects-factory/*:environment:*` lets every repo in a second
-        org assume this role. Remove it if that is not intended.
-      - The `owner@id/repo@id` forms are not subjects GitHub actually issues, so
-        they never match. They are kept only to make the import a no-op and can be
-        dropped once you confirm nothing depends on them.
+    The default preserves an entry found on the pre-existing role:
+    `repo:core-projects-factory/*:environment:*` lets every repository in a second
+    org assume this role, which carries AdministratorAccess. Remove it unless that
+    is deliberate.
   EOT
   type        = list(string)
   default = [
-    "repo:selvaraj-outlook@261786377/k8s-VLLM@1371954039:environment:dev",
-    "repo:selvaraj-outlook@261786377/k8s-VLLM@1371954039:environment:staging",
-    "repo:selvaraj-outlook@261786377/k8s-VLLM@1371954039:environment:prod",
     "repo:core-projects-factory/*:environment:*",
   ]
 }

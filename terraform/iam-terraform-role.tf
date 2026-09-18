@@ -75,10 +75,17 @@ data "aws_iam_policy_document" "terraform_ci_assume_role" {
     # Scoped to the infra environments only. The deploy environments (dev,
     # staging, prod) cannot assume this role, so a change to a deploy job cannot
     # reach infrastructure permissions.
+    # Both subject prefixes, for the same reason as the deploy role: this repo
+    # uses immutable subject claims, so the name-based form alone would never
+    # match and this role would be unusable.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [for env in var.terraform_ci_environments : "repo:${local.github_repo}:environment:${env}"]
+      values = flatten([
+        for prefix in local.github_subject_prefixes : [
+          for env in var.terraform_ci_environments : "${prefix}:environment:${env}"
+        ]
+      ])
     }
   }
 }
