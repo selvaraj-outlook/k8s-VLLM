@@ -2,7 +2,7 @@
 
 This bundle deploys a single-node GPU inference service using [vLLM](https://docs.vllm.ai/) and the OpenAI-compatible API. The Kubernetes layer is cloud-neutral and expects an NVIDIA GPU node; the `terraform/` and `cluster-bootstrap/` layers target AWS EKS.
 
-## Layout
+### Layout
 
 | Path | Layer | Applied by |
 |---|---|---|
