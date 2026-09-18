@@ -33,8 +33,17 @@ locals {
   # triggers on push to main plus workflow_dispatch. Scoping the trust policy to
   # those exact subjects prevents any other repo, branch, or fork from assuming
   # the role.
+  #
+  # The infra environments are included only while
+  # allow_deploy_role_terraform_bootstrap is true, so the terraform-plan job has
+  # something to assume before the dedicated Terraform CI role exists.
+  deploy_role_environments = concat(
+    var.github_environments,
+    var.allow_deploy_role_terraform_bootstrap ? var.terraform_ci_environments : [],
+  )
+
   github_subjects = concat(
-    [for env in var.github_environments : "repo:${local.github_repo}:environment:${env}"],
+    [for env in local.deploy_role_environments : "repo:${local.github_repo}:environment:${env}"],
     [for branch in var.github_allowed_branches : "repo:${local.github_repo}:ref:refs/heads/${branch}"],
     var.github_allowed_subjects,
   )

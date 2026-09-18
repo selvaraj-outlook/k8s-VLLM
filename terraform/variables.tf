@@ -254,6 +254,26 @@ variable "github_allowed_branches" {
   default     = []
 }
 
+variable "allow_deploy_role_terraform_bootstrap" {
+  description = <<-EOT
+    Also trust the Terraform CI environments (infra, infra-plan) on the *deploy*
+    role.
+
+    This exists to break a chicken-and-egg: the terraform-plan job needs a role to
+    assume, but the dedicated Terraform CI role is created by the very apply that
+    job is trying to run. Allowing the deploy role to cover the infra
+    environments lets the pipeline bootstrap itself.
+
+    The cost is real: the deploy role currently carries AdministratorAccess, so
+    while this is true, the infra jobs run with admin. Once the first apply has
+    created the dedicated role and AWS_TERRAFORM_ROLE_ARN is set, flip this to
+    false and re-apply to narrow the deploy role back to its three deploy
+    environments.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "create_github_oidc_provider" {
   description = "Keep the GitHub OIDC provider in this configuration. The provider already exists in this account and is adopted via the import block in imports.tf."
   type        = bool
